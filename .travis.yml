@@ -1,0 +1,39 @@
+sudo: required
+language: generic 
+services: 
+  - docker
+
+before_install:
+  - docker build -t holadepo/react-test -f ./client/Dockerfile.dev ./client
+
+script:
+  - docker run -e CI=true holadepo/react-test npm run test
+
+after_sussess:
+  - docker build -t holadepo/fib-client ./client
+  - docker build -t holadepo/fib-nginx ./nginx
+  - docker build -t holadepo/fib-server ./server
+  - docker build -t holadepo/fib-worker ./worker
+
+  # Login to docker CLI
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_ID" --password-stdin
+  - docker push holadepo/fib-client
+  - docker push holadepo/fib-nginx
+  - docker push holadepo/fib-server
+  - docker push holadepo/fib-worker
+
+deploy:
+  provider: elasticbeanstalk
+  region: "us-east-1"
+  app: "docker-react"
+  env: "Dockerreact-env"
+  bucket_name: "elasticbeanstalk-us-east-1-205533383121"
+  bucket_path: "docker-react"
+  on:
+    branch: master
+  access_key_id: $AWS_ACCESS_KEY
+  secret_access_key: $AWS_SECRET_KEY
+
+
+script:
+  - docker run -e CI=true USERNAME/react-test npm test
