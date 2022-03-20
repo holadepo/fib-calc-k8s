@@ -1,39 +1,79 @@
-name: Deploy App
+name: Deploy to GKE
+
 on:
   push:
     branches:
-      - master
- 
+    - master
+
+env:
+  PROJECT_ID: ${{ secrets.GKE_PROJECT }}
+  GKE_CLUSTER: fib-cluster-1
+  GKE_ZONE: europe-west2-c 
+  DEPLOYMENT_NAME: gke-hello-app # TODO: update deployment name if changed in deployment.yaml
+  # SHA: $(git rev-parse HEAD)
+  # GITHUB_SHA
+
 jobs:
-  build:
+  setup-and-deploy:
+    name: Setup and Deploy
     runs-on: ubuntu-latest
+
+    # Add "id-token" with the intended permissions.
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
     steps:
-      - uses: actions/checkout@v2
-      - run: docker login -u ${{ secrets.DOCKER_ID }} -p '${{ secrets.DOCKER_PASSWORD }}'
-      - run: docker build -t holadepo/react-test -f ./client/Dockerfile.dev ./client
-      - run: docker run -e CI=true holadepo/react-test npm run test
- 
-      - run: docker build -t holadepo/fib-client ./client
-      - run: docker build -t holadepo/fib-nginx ./nginx
-      - run: docker build -t holadepo/fib-server ./server
-      - run: docker build -t holadepo/fib-worker ./worker
+    - name: Checkout
+      uses: actions/checkout@v3
 
-      - run: docker push holadepo/fib-client
-      - run: docker push holadepo/fib-nginx
-      - run: docker push holadepo/fib-server
-      - run: docker push holadepo/fib-worker
+    # Configure Workload Identity Federation and generate an access token.
+    # - id: 'auth'
+    #   name: 'Authenticate to Google Cloud'
+    #   uses: 'google-github-actions/auth@v0'
+    #   with:
+    #     workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+    #     service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
 
-      - name: Generate deployment package
-        run: zip -r deploy.zip . -x '*.git*'
+    # Alternative option - authentication via credentials json
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        credentials_json: '${{ secrets.GKE_SA_KEY }}'
 
-      - name: Deploy to EB
-        uses: einaregilsson/beanstalk-deploy@v18
-        with:
-          aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-          aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-          application_name: fib-calc
-          environment_name: Fibcalc-env
-          existing_bucket_name: elasticbeanstalk-us-east-1-205533383121
-          region: us-east-1
-          version_label: ${{ github.sha }}
-          deployment_package: deploy.zip
+    # Setup gcloud CLI
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v0
+
+    # Get the GKE credentials so we can deploy to the cluster
+    - run: |-
+        gcloud container clusters get-credentials "$GKE_CLUSTER" --zone "$GKE_ZONE"
+#       gcloud config set project __
+#       gcloud config set compute/zone __
+
+    - run: docker login -u ${{ secrets.DOCKER_ID }} -p '${{ secrets.DOCKER_PASSWORD }}'
+    - run: docker build -t holadepo/react-test -f ./client/Dockerfile.dev ./client
+    - run: docker run -e CI=true holadepo/react-test npm run test
+
+    - run: docker build -t holadepo/fib-client:latest -t holadepo/fib-client:$GITHUB_SHA ./client
+    - run: docker build -t holadepo/fib-server:latest -t holadepo/fib-server:$GITHUB_SHA ./server
+    - run: docker build -t holadepo/fib-worker:latest -t holadepo/fib-worker:$GITHUB_SHA ./worker
+
+    - run: docker push holadepo/fib-client:latest
+    - run: docker push holadepo/fib-server:latest
+    - run: docker push holadepo/fib-worker:latest
+
+    - run: docker push holadepo/fib-client:$GITHUB_SHA
+    - run: docker push holadepo/fib-server:$GITHUB_SHA
+    - run: docker push holadepo/fib-worker:$GITHUB_SHA
+
+    # Deploy sample image to the GKE cluster
+    - name: Deploy
+      run: |-
+        kubectl apply -f k8s
+        kubectl set image deployments/server-deployment server=holadepo/fib-server:$GITHUB_SHA
+        kubectl set image deployments/client-deployment client=holadepo/fib-client:$GITHUB_SHA
+        kubectl set image deployments/worker-deployment worker=holadepo/fib-worker:$GITHUB_SHA
+        kubectl get services -o wide
+
+#        kubectl rollout status deployment/$DEPLOYMENT_NAME
